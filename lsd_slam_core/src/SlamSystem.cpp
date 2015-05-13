@@ -1693,6 +1693,16 @@ SE3 SlamSystem::getCurrentPoseEstimate()
 	return camToWorld;
 }
 
+Sophus::Sim3f SlamSystem::getCurrentPoseEstimateScale()
+{
+    Sophus::Sim3f camToWorld = Sophus::Sim3f();
+    keyFrameGraph->allFramePosesMutex.lock_shared();
+    if(keyFrameGraph->allFramePoses.size() > 0)
+        camToWorld = keyFrameGraph->allFramePoses.back()->getCamToWorld().cast<float>();
+    keyFrameGraph->allFramePosesMutex.unlock_shared();
+    return camToWorld;
+}
+
 std::vector<FramePoseStruct*, Eigen::aligned_allocator<FramePoseStruct*> > SlamSystem::getAllPoses()
 {
 	return keyFrameGraph->allFramePoses;

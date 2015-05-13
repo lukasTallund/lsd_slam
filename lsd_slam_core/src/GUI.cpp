@@ -22,10 +22,10 @@ GUI::GUI()
 
     pangolin::Display("cam").SetBounds(0, 1.0f, 0, 1.0f, -640 / 480.0)
                             .SetHandler(new pangolin::Handler3D(s_cam));
+	// Make image small
+    pangolin::Display("Image").SetAspect(1.0f / 480.0f);
 
-    pangolin::Display("Image").SetAspect(640.0f / 480.0f);
-
-    pangolin::Display("multi").SetBounds(pangolin::Attach::Pix(0), 1 / 4.0f, pangolin::Attach::Pix(180), 1.0)
+    pangolin::Display("multi").SetBounds(pangolin::Attach::Pix(0), 1 / 4.0f, pangolin::Attach::Pix(0), 1.0)
                               .SetLayout(pangolin::LayoutEqualHorizontal)
                               .AddDisplay(pangolin::Display("Image"));
 

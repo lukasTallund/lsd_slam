@@ -42,8 +42,10 @@ std::vector<std::string> files;
 int w, h, w_inp, h_inp;
 ThreadMutexObject<bool> lsdDone(false);
 GUI gui;
+
 RawLogReader * logReader = 0;
 int numFrames = 0;
+double hz = 30;
 
 std::string &ltrim(std::string &s) {
         s.erase(s.begin(), std::find_if(s.begin(), s.end(), std::not1(std::ptr_fun<int, int>(std::isspace))));
@@ -134,8 +136,6 @@ using namespace lsd_slam;
 
 void run(SlamSystem * system, Undistorter* undistorter, Output3DWrapper* outputWrapper, Sophus::Matrix3f K)
 {
-    // get HZ
-    double hz = 30;
 
     cv::Mat image = cv::Mat(h, w, CV_8U);
     int runningIDX=0;
@@ -187,7 +187,7 @@ void run(SlamSystem * system, Undistorter* undistorter, Output3DWrapper* outputW
             system->trackFrame(image.data, runningIDX, hz == 0, fakeTimeStamp);
         }
 
-        //gui.pose.assignValue(system->getCurrentPoseEstimateScale());
+        gui.pose.assignValue(system->getCurrentPoseEstimateScale());
 
         runningIDX++;
         fakeTimeStamp+=0.03;
@@ -219,6 +219,19 @@ int main( int argc, char** argv )
 	{
 		 undistorter = Undistorter::getUndistorterForFile(calibFile.c_str());
 	}
+	std::string hzString;
+	if(Parse::arg(argc, argv, "-h", hzString ) > 0)
+	{
+		try
+		{
+			hz = std::stod (hzString);	
+		}
+		catch(std::exception& e)
+		{
+			printf("Ignoring value of flag -h since unable to convert to double");
+		}
+	}
+
 
 	if(undistorter == 0)
 	{
