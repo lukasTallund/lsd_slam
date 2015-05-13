@@ -67,6 +67,7 @@ public:
 
 	bool trackingIsGood;
 
+	bool finalized;
 
 	SlamSystem(int w, int h, Eigen::Matrix3f K, bool enableSLAM = true);
 	SlamSystem(const SlamSystem&) = delete;
@@ -94,6 +95,8 @@ public:
 
 	/** Returns the current pose estimate. */
 	SE3 getCurrentPoseEstimate();
+
+	Sophus::Sim3f getCurrentPoseEstimateScale();
 
 	/** Sets the visualization where point clouds and camera poses will be sent to. */
 	void setVisualization(Output3DWrapper* outputWrapper);

@@ -1,6 +1,4 @@
 /**
-* This file is part of LSD-SLAM.
-*
 * Copyright 2013 Jakob Engel <engelj at in dot tum dot de> (Technical University of Munich)
 * For more information see <http://vision.in.tum.de/lsdslam> 
 *
@@ -22,18 +20,22 @@
 
 #include <boost/thread.hpp>
 #include "util/settings.h"
+#include "util/Parse.h"
 #include "util/globalFuncs.h"
+#include "util/ThreadMutexObject.h"
+#include "IOWrapper/Pangolin/PangolinOutput3DWrapper.h"
 #include "SlamSystem.h"
 
 #include <sstream>
 #include <fstream>
 #include <dirent.h>
 #include <algorithm>
-#include "IOWrapper/Pangolin/PangolinOutput3DWrapper.h"  
 
 #include "util/Undistorter.h"
+#include "util/RawLogReader.h"
 
 #include "opencv2/opencv.hpp"
+
 #include "GUI.h"
 
 std::vector<std::string> files;
@@ -185,7 +187,7 @@ void run(SlamSystem * system, Undistorter* undistorter, Output3DWrapper* outputW
             system->trackFrame(image.data, runningIDX, hz == 0, fakeTimeStamp);
         }
 
-        gui.pose.assignValue(system->getCurrentPoseEstimateScale());
+        //gui.pose.assignValue(system->getCurrentPoseEstimateScale());
 
         runningIDX++;
         fakeTimeStamp+=0.03;
@@ -237,6 +239,8 @@ int main( int argc, char** argv )
 	Sophus::Matrix3f K;
 	K << fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0;
 
+	Resolution::getInstance(w, h);
+	Intrinsics::getInstance(fx, fy, cx, cy);
 
 	gui.initImages();
 
@@ -247,7 +251,6 @@ int main( int argc, char** argv )
 	system->setVisualization(outputWrapper);
 
 
-
 	// open image files: first try to open as file.
 	std::string source;
 	if(!(Parse::arg(argc, argv, "-f", source) > 0))
@@ -256,21 +259,34 @@ int main( int argc, char** argv )
 		exit(0);
 	}
 
+	Bytef * decompressionBuffer = new Bytef[Resolution::getInstance().numPixels() * 2];
+    IplImage * deCompImage = 0;
 
-	if(getdir(source, files) >= 0)
-	{
-		printf("found %d image files in folder %s!\n", (int)files.size(), source.c_str());
-	}
-	else if(getFile(source, files) >= 0)
-	{
-		printf("found %d image files in file %s!\n", (int)files.size(), source.c_str());
-	}
-	else
-	{
-		printf("could not load file list! wrong path / file?\n");
-	}
+    if(source.substr(source.find_last_of(".") + 1) == "klg")
+    {
+        logReader = new RawLogReader(decompressionBuffer,
+                                     deCompImage,
+                                     source);
 
+        numFrames = logReader->getNumFrames();
+    }
+    else
+    {
+        if(getdir(source, files) >= 0)
+        {
+            printf("found %d image files in folder %s!\n", (int)files.size(), source.c_str());
+        }
+        else if(getFile(source, files) >= 0)
+        {
+            printf("found %d image files in file %s!\n", (int)files.size(), source.c_str());
+        }
+        else
+        {
+            printf("could not load file list! wrong path / file?\n");
+        }
 
+        numFrames = (int)files.size();
+    }
 
 	boost::thread lsdThread(run, system, undistorter, outputWrapper, K);
 
@@ -293,8 +309,6 @@ int main( int argc, char** argv )
 	}
 
 	lsdDone.assignValue(true);
-
-	system->finalize();
 
 	lsdThread.join();
 
