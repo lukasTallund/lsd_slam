@@ -29,14 +29,19 @@
 #include <fstream>
 #include <dirent.h>
 #include <algorithm>
-
-#include "IOWrapper/ROS/ROSOutput3DWrapper.h"
-#include "IOWrapper/ROS/rosReconfigure.h"
+#include "IOWrapper/Pangolin/PangolinOutput3DWrapper.h"  
 
 #include "util/Undistorter.h"
-#include <ros/package.h>
 
 #include "opencv2/opencv.hpp"
+#include "GUI.h"
+
+std::vector<std::string> files;
+int w, h, w_inp, h_inp;
+ThreadMutexObject<bool> lsdDone(false);
+GUI gui;
+RawLogReader * logReader = 0;
+int numFrames = 0;
 
 std::string &ltrim(std::string &s) {
         s.erase(s.begin(), std::find_if(s.begin(), s.end(), std::not1(std::ptr_fun<int, int>(std::isspace))));
@@ -123,43 +128,107 @@ int getFile (std::string source, std::vector<std::string> &files)
 
 }
 
-
 using namespace lsd_slam;
+
+void run(SlamSystem * system, Undistorter* undistorter, Output3DWrapper* outputWrapper, Sophus::Matrix3f K)
+{
+    // get HZ
+    double hz = 30;
+
+    cv::Mat image = cv::Mat(h, w, CV_8U);
+    int runningIDX=0;
+    float fakeTimeStamp = 0;
+
+    for(unsigned int i = 0; i < numFrames; i++)
+    {
+        if(lsdDone.getValue())
+            break;
+
+        cv::Mat imageDist = cv::Mat(h, w, CV_8U);
+
+        if(logReader)
+        {
+            logReader->getNext();
+
+            cv::Mat3b img(h, w, (cv::Vec3b *)logReader->rgb);
+
+            cv::cvtColor(img, imageDist, CV_RGB2GRAY);
+        }
+        else
+        {
+            imageDist = cv::imread(files[i], CV_LOAD_IMAGE_GRAYSCALE);
+
+            if(imageDist.rows != h_inp || imageDist.cols != w_inp)
+            {
+                if(imageDist.rows * imageDist.cols == 0)
+                    printf("failed to load image %s! skipping.\n", files[i].c_str());
+                else
+                    printf("image %s has wrong dimensions - expecting %d x %d, found %d x %d. Skipping.\n",
+                            files[i].c_str(),
+                            w,h,imageDist.cols, imageDist.rows);
+                continue;
+            }
+        }
+
+        assert(imageDist.type() == CV_8U);
+
+        undistorter->undistort(imageDist, image);
+
+        assert(image.type() == CV_8U);
+
+        if(runningIDX == 0)
+        {
+            system->randomInit(image.data, fakeTimeStamp, runningIDX);
+        }
+        else
+        {
+            system->trackFrame(image.data, runningIDX, hz == 0, fakeTimeStamp);
+        }
+
+        gui.pose.assignValue(system->getCurrentPoseEstimateScale());
+
+        runningIDX++;
+        fakeTimeStamp+=0.03;
+
+        if(fullResetRequested)
+        {
+            printf("FULL RESET!\n");
+            delete system;
+
+            system = new SlamSystem(w, h, K, doSlam);
+            system->setVisualization(outputWrapper);
+
+            fullResetRequested = false;
+            runningIDX = 0;
+        }
+    }
+
+    lsdDone.assignValue(true);
+}
+
 int main( int argc, char** argv )
 {
-	ros::init(argc, argv, "LSD_SLAM");
-
-	dynamic_reconfigure::Server<lsd_slam_core::LSDParamsConfig> srv(ros::NodeHandle("~"));
-	srv.setCallback(dynConfCb);
-
-	dynamic_reconfigure::Server<lsd_slam_core::LSDDebugParamsConfig> srvDebug(ros::NodeHandle("~Debug"));
-	srvDebug.setCallback(dynConfCbDebug);
-
-	packagePath = ros::package::getPath("lsd_slam_core")+"/";
-
-
-
 	// get camera calibration in form of an undistorter object.
 	// if no undistortion is required, the undistorter will just pass images through.
 	std::string calibFile;
 	Undistorter* undistorter = 0;
-	if(ros::param::get("~calib", calibFile))
+
+	if(Parse::arg(argc, argv, "-c", calibFile) > 0)
 	{
 		 undistorter = Undistorter::getUndistorterForFile(calibFile.c_str());
-		 ros::param::del("~calib");
 	}
 
 	if(undistorter == 0)
 	{
-		printf("need camera calibration file! (set using _calib:=FILE)\n");
+		printf("need camera calibration file! (set using -c FILE)\n");
 		exit(0);
 	}
 
-	int w = undistorter->getOutputWidth();
-	int h = undistorter->getOutputHeight();
+	w = undistorter->getOutputWidth();
+	h = undistorter->getOutputHeight();
 
-	int w_inp = undistorter->getInputWidth();
-	int h_inp = undistorter->getInputHeight();
+	w_inp = undistorter->getInputWidth();
+	h_inp = undistorter->getInputHeight();
 
 	float fx = undistorter->getK().at<double>(0, 0);
 	float fy = undistorter->getK().at<double>(1, 1);
@@ -169,25 +238,23 @@ int main( int argc, char** argv )
 	K << fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0;
 
 
-	// make output wrapper. just set to zero if no output is required.
-	Output3DWrapper* outputWrapper = new ROSOutput3DWrapper(w,h);
+	gui.initImages();
 
+	Output3DWrapper* outputWrapper = new PangolinOutput3DWrapper(w, h, gui);
 
 	// make slam system
-	SlamSystem* system = new SlamSystem(w, h, K, doSlam);
+	SlamSystem * system = new SlamSystem(w, h, K, doSlam);
 	system->setVisualization(outputWrapper);
 
 
 
 	// open image files: first try to open as file.
 	std::string source;
-	std::vector<std::string> files;
-	if(!ros::param::get("~files", source))
+	if(!(Parse::arg(argc, argv, "-f", source) > 0))
 	{
-		printf("need source files! (set using _files:=FOLDER)\n");
+		printf("need source files! (set using -f FOLDER or KLG)\n");
 		exit(0);
 	}
-	ros::param::del("~files");
 
 
 	if(getdir(source, files) >= 0)
@@ -205,72 +272,31 @@ int main( int argc, char** argv )
 
 
 
-	// get HZ
-	double hz = 0;
-	if(!ros::param::get("~hz", hz))
-		hz = 0;
-	ros::param::del("~hz");
+	boost::thread lsdThread(run, system, undistorter, outputWrapper, K);
 
-
-
-	cv::Mat image = cv::Mat(h,w,CV_8U);
-	int runningIDX=0;
-	float fakeTimeStamp = 0;
-
-	ros::Rate r(hz);
-
-	for(unsigned int i=0;i<files.size();i++)
+	while(!pangolin::ShouldQuit())
 	{
-		cv::Mat imageDist = cv::imread(files[i], CV_LOAD_IMAGE_GRAYSCALE);
+	    if(lsdDone.getValue() && !system->finalized)
+	    {
+	        system->finalize();
+	    }
 
-		if(imageDist.rows != h_inp || imageDist.cols != w_inp)
-		{
-			if(imageDist.rows * imageDist.cols == 0)
-				printf("failed to load image %s! skipping.\n", files[i].c_str());
-			else
-				printf("image %s has wrong dimensions - expecting %d x %d, found %d x %d. Skipping.\n",
-						files[i].c_str(),
-						w,h,imageDist.cols, imageDist.rows);
-			continue;
-		}
-		assert(imageDist.type() == CV_8U);
+	    gui.preCall();
 
-		undistorter->undistort(imageDist, image);
-		assert(image.type() == CV_8U);
+	    gui.drawKeyframes();
 
-		if(runningIDX == 0)
-			system->randomInit(image.data, fakeTimeStamp, runningIDX);
-		else
-			system->trackFrame(image.data, runningIDX ,hz == 0,fakeTimeStamp);
-		runningIDX++;
-		fakeTimeStamp+=0.03;
+	    gui.drawFrustum();
 
-		if(hz != 0)
-			r.sleep();
+	    gui.drawImages();
 
-		if(fullResetRequested)
-		{
-
-			printf("FULL RESET!\n");
-			delete system;
-
-			system = new SlamSystem(w, h, K, doSlam);
-			system->setVisualization(outputWrapper);
-
-			fullResetRequested = false;
-			runningIDX = 0;
-		}
-
-		ros::spinOnce();
-
-		if(!ros::ok())
-			break;
+	    gui.postCall();
 	}
 
+	lsdDone.assignValue(true);
 
 	system->finalize();
 
-
+	lsdThread.join();
 
 	delete system;
 	delete undistorter;
